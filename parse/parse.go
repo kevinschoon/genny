@@ -389,7 +389,7 @@ func addImports(r io.Reader, importPaths []string) []byte {
 // ===== Start AST related implementation =====
 
 type replaceSpec struct {
-	genericType string
+	genericType  string
 	specificType string
 }
 
@@ -406,7 +406,7 @@ func (rs replaceSpec) String() string {
 }
 
 func deleteAllComments(file *ast.File, root ast.Node) {
-	ast.Inspect(root, func (n ast.Node) bool {
+	ast.Inspect(root, func(n ast.Node) bool {
 		if comment, ok := n.(*ast.CommentGroup); ok {
 			deleteComment(file, comment)
 		}
@@ -546,7 +546,7 @@ func generateSpecificType(fs *token.FileSet, file *ast.File, spec replaceSpec) {
 			}
 			return true
 		},
-		func (c *astutil.Cursor) bool {
+		func(c *astutil.Cursor) bool {
 			switch v := c.Node().(type) {
 			case *ast.GenDecl:
 				// If the declaration became empty after removing `type myType generic.Type`,
@@ -581,7 +581,7 @@ func isGenericTypeDefinition(typeSpec *ast.TypeSpec) bool {
 func isGenericTypeSelector(selector *ast.SelectorExpr) bool {
 	if ident, ok := selector.X.(*ast.Ident); ok {
 		if ident.Name == "generic" &&
-				(selector.Sel.Name == "Type" || selector.Sel.Name == "Number") {
+			(selector.Sel.Name == "Type" || selector.Sel.Name == "Number") {
 			return true
 		}
 	}
@@ -599,6 +599,9 @@ func generateSpecificAst(filename string, in io.ReadSeeker, typeSet map[string]s
 	if err != nil {
 		return nil, &errSource{Err: err}
 	}
+
+	// strip any nodes which are commented with //+gennyignore
+	stripIgnores(fs, file)
 
 	// make sure every generic.Type is represented in the types
 	// argument.
@@ -626,11 +629,47 @@ func generateSpecificAst(filename string, in io.ReadSeeker, typeSet map[string]s
 
 	var buf bytes.Buffer
 	for t, specificType := range typeSet {
-		generateSpecificType(fs, file, replaceSpec{ t, specificType })
+		generateSpecificType(fs, file, replaceSpec{t, specificType})
 	}
 
 	err = printer.Fprint(&buf, fs, file)
 	return buf.Bytes(), err
+}
+
+func isIgnore(text string) bool {
+	s := strings.Replace(text, "\n", "", -1)
+	return s == "+gennyignore" || s == "// +gennyignore"
+}
+
+func stripIgnores(fset *token.FileSet, file *ast.File) {
+	cmap := ast.NewCommentMap(fset, file, file.Comments)
+	// Search the entire AST for +gennyignore
+	var nodes []ast.Node
+	for node, comments := range cmap {
+		for _, comment := range comments {
+			if isIgnore(comment.Text()) {
+				nodes = append(nodes, node)
+			}
+		}
+	}
+	astutil.Apply(
+		file,
+		func(c *astutil.Cursor) bool {
+			for _, node := range nodes {
+				if c.Node() == node {
+					c.Delete()
+				}
+			}
+			switch v := c.Node().(type) {
+			case *ast.Comment:
+				if isIgnore(v.Text) {
+					c.Delete()
+				}
+			}
+			return true
+		},
+		nil,
+	)
 }
 
 func containsFold(s, substring string) bool {
